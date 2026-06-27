@@ -1,0 +1,3 @@
+rich
+psutil
+prompt_toolkit

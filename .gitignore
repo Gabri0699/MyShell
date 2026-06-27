@@ -1,0 +1,21 @@
+# Artefatti di build PyInstaller
+build/
+dist/
+*.spec
+
+# Cache Python
+__pycache__/
+*.py[cod]
+*.egg-info/
+.venv/
+venv/
+
+# File generati a runtime
+.myshell_history
+
+# IDE / sistema
+.vscode/
+.idea/
+.claude/
+Thumbs.db
+.DS_Store
