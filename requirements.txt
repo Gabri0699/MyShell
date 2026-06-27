@@ -1,3 +1,4 @@
 rich
 psutil
 prompt_toolkit
+cryptography

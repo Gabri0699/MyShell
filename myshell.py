@@ -1,36 +1,40 @@
 #!/usr/bin/env python3
 """
-MyShell - una shell personalizzata, colorata, con monitoraggio processi
-e navigazione del file system.
+MyShell - a custom, colorful shell with process monitoring and file
+system navigation.
 
-Comandi built-in:
-    cd [path]            cambia cartella (cd senza argomenti = home)
-    ls [path]            elenco file/cartelle colorato
-    pwd                  mostra la cartella corrente
-    tree [path] [n]      albero delle cartelle (n = profondita', default 2)
-    mkdir <dir>          crea una cartella (anche annidata)
-    rm [-r] <path>       elimina file (-r per le cartelle)
-    copy/cp <src> <dst>  copia file o cartella
-    move/mv <src> <dst>  sposta o rinomina
-    cat/type <file>      mostra il contenuto di un file (colorato)
-    find <nome|*.ext>    cerca file ricorsivamente nella cartella corrente
-    open/start <path>    apre file/cartella col programma predefinito
-    ps [n]               tabella dei processi (n = quanti, ordinati per CPU)
-    top [n]              dashboard processi in tempo reale (Ctrl+C per uscire)
-    sysinfo              stato di CPU / RAM / disco
-    clear / cls          pulisce lo schermo
-    help                 mostra questo aiuto
-    exit / quit          esce dalla shell
+Built-in commands:
+    cd [path]            change directory (cd with no argument = home)
+    ls [path]            colored file/folder listing
+    pwd                  print the current directory
+    tree [path] [n]      directory tree (n = depth, default 2)
+    mkdir <dir>          create a folder (nested allowed)
+    rm [-r] <path>       delete files (-r for folders)
+    copy/cp <src> <dst>  copy a file or folder
+    move/mv <src> <dst>  move or rename
+    cat/type <file>      show file contents (syntax-highlighted)
+    find <name|*.ext>    search files recursively in the current folder
+    open/start <path>    open a file/folder with the default program
+    ps [n]               process table (n = how many, sorted by CPU)
+    top [n]              real-time process dashboard (Ctrl+C to exit)
+    sysinfo              CPU / RAM / disk status
+    pass <sub>           encrypted password manager (pass init/add/get/list/rm/gen/lock)
+    clear / cls          clear the screen
+    help                 show this help
+    exit / quit          quit the shell
 
-Qualsiasi altro comando viene eseguito dal sistema operativo.
-Pipe e redirect sono supportati: es.  ls | findstr .py   oppure   echo ciao > f.txt
+Any other command is executed by the operating system.
+Pipes and redirects are supported, e.g.  ls | findstr .py   or   echo hi > f.txt
 """
 
 from __future__ import annotations
 
+import getpass
 import os
+import secrets
 import shlex
 import shutil
+import string
 import subprocess
 import time
 from datetime import datetime
@@ -38,6 +42,8 @@ from pathlib import Path
 from typing import Any, Callable, cast
 
 import psutil
+
+import vault
 from rich.console import Console, Group
 from rich.table import Table
 from rich.tree import Tree
@@ -51,16 +57,16 @@ console = Console()
 BUILTIN_COMMANDS = [
     "cd", "ls", "dir", "pwd", "tree", "ps", "top", "sysinfo",
     "mkdir", "rm", "del", "copy", "cp", "move", "mv",
-    "cat", "type", "find", "open", "start",
+    "cat", "type", "find", "open", "start", "pass",
     "clear", "cls", "help", "exit", "quit",
 ]
 
 
 # --------------------------------------------------------------------------- #
-# Utilita'
+# Utilities
 # --------------------------------------------------------------------------- #
 def human_bytes(n: float) -> str:
-    """Converte un numero di byte in formato leggibile (KB, MB, GB...)."""
+    """Convert a number of bytes into a readable format (KB, MB, GB...)."""
     for unit in ("B", "KB", "MB", "GB", "TB", "PB"):
         if abs(n) < 1024.0:
             return f"{n:3.1f} {unit}"
@@ -69,7 +75,7 @@ def human_bytes(n: float) -> str:
 
 
 def color_for_percent(pct: float) -> str:
-    """Verde/giallo/rosso in base alla percentuale di carico."""
+    """Green/yellow/red depending on the load percentage."""
     if pct < 50:
         return "green"
     if pct < 80:
@@ -78,18 +84,18 @@ def color_for_percent(pct: float) -> str:
 
 
 # --------------------------------------------------------------------------- #
-# Comandi: navigazione file system
+# Commands: file system navigation
 # --------------------------------------------------------------------------- #
 def cmd_cd(args: list[str]) -> None:
     target = args[0] if args else str(Path.home())
     try:
         os.chdir(os.path.expanduser(target))
     except FileNotFoundError:
-        console.print(f"[red]cd: cartella non trovata:[/red] {target}")
+        console.print(f"[red]cd: directory not found:[/red] {target}")
     except NotADirectoryError:
-        console.print(f"[red]cd: non e' una cartella:[/red] {target}")
+        console.print(f"[red]cd: not a directory:[/red] {target}")
     except PermissionError:
-        console.print(f"[red]cd: permesso negato:[/red] {target}")
+        console.print(f"[red]cd: permission denied:[/red] {target}")
 
 
 def cmd_pwd(_args: list[str]) -> None:
@@ -99,21 +105,21 @@ def cmd_pwd(_args: list[str]) -> None:
 def cmd_ls(args: list[str]) -> None:
     path = Path(args[0]) if args else Path.cwd()
     if not path.exists():
-        console.print(f"[red]ls: percorso inesistente:[/red] {path}")
+        console.print(f"[red]ls: path does not exist:[/red] {path}")
         return
 
     table = Table(show_header=True, header_style="bold magenta", box=None)
-    table.add_column("Nome")
-    table.add_column("Dimensione", justify="right")
-    table.add_column("Modificato", justify="right")
+    table.add_column("Name")
+    table.add_column("Size", justify="right")
+    table.add_column("Modified", justify="right")
 
     try:
         entries = sorted(
             path.iterdir(),
-            key=lambda p: (p.is_file(), p.name.lower()),  # cartelle prima
+            key=lambda p: (p.is_file(), p.name.lower()),  # folders first
         )
     except PermissionError:
-        console.print(f"[red]ls: permesso negato:[/red] {path}")
+        console.print(f"[red]ls: permission denied:[/red] {path}")
         return
 
     for entry in entries:
@@ -160,18 +166,18 @@ def cmd_tree(args: list[str]) -> None:
 
 
 # --------------------------------------------------------------------------- #
-# Comandi: monitoraggio processi e sistema
+# Commands: process and system monitoring
 # --------------------------------------------------------------------------- #
 def _process_table(limit: int) -> Table:
     table = Table(
-        title=f"Processi (top {limit} per CPU) - {datetime.now():%H:%M:%S}",
+        title=f"Processes (top {limit} by CPU) - {datetime.now():%H:%M:%S}",
         header_style="bold magenta",
     )
     table.add_column("PID", justify="right", style="dim")
-    table.add_column("Nome")
+    table.add_column("Name")
     table.add_column("CPU %", justify="right")
     table.add_column("RAM %", justify="right")
-    table.add_column("Memoria", justify="right")
+    table.add_column("Memory", justify="right")
 
     procs: list[dict[str, Any]] = []
     for p in psutil.process_iter(["pid", "name", "cpu_percent", "memory_percent", "memory_info"]):
@@ -200,7 +206,7 @@ def _process_table(limit: int) -> Table:
 
 def cmd_ps(args: list[str]) -> None:
     limit = int(args[0]) if args and args[0].isdigit() else 15
-    # Prima passata per "innescare" la misura cpu_percent di psutil.
+    # First pass to "prime" psutil's cpu_percent measurement.
     for p in psutil.process_iter():
         try:
             p.cpu_percent(None)
@@ -211,7 +217,7 @@ def cmd_ps(args: list[str]) -> None:
 
 
 def _bar(pct: float, width: int = 30) -> str:
-    """Barra di avanzamento testuale colorata, es. [#####-----] 50%."""
+    """Colored text progress bar, e.g. [#####-----] 50%."""
     filled = int(round(pct / 100 * width))
     color = color_for_percent(pct)
     bar = f"[{color}]{'#' * filled}[/][dim]{'-' * (width - filled)}[/]"
@@ -219,18 +225,18 @@ def _bar(pct: float, width: int = 30) -> str:
 
 
 def _dashboard(limit: int) -> Group:
-    """Pannello riepilogo (CPU/RAM/disco con barre) + tabella processi."""
+    """Summary panel (CPU/RAM/disk bars) + process table."""
     cpu = psutil.cpu_percent(interval=None)
     vm = psutil.virtual_memory()
     disk = psutil.disk_usage(str(Path.cwd().anchor or "/"))
 
     header = Panel(
         "\n".join([
-            f"CPU   {_bar(cpu)}  su {psutil.cpu_count()} core",
-            f"RAM   {_bar(vm.percent)}  ({human_bytes(vm.used)} / {human_bytes(vm.total)})",
-            f"Disco {_bar(disk.percent)}  ({human_bytes(disk.used)} / {human_bytes(disk.total)})",
+            f"CPU  {_bar(cpu)}  on {psutil.cpu_count()} cores",
+            f"RAM  {_bar(vm.percent)}  ({human_bytes(vm.used)} / {human_bytes(vm.total)})",
+            f"Disk {_bar(disk.percent)}  ({human_bytes(disk.used)} / {human_bytes(disk.total)})",
         ]),
-        title=f"[bold]Sistema[/bold] - {datetime.now():%H:%M:%S}  [dim](Ctrl+C per uscire)[/dim]",
+        title=f"[bold]System[/bold] - {datetime.now():%H:%M:%S}  [dim](Ctrl+C to exit)[/dim]",
         border_style="cyan",
     )
     return Group(header, _process_table(limit))
@@ -238,7 +244,7 @@ def _dashboard(limit: int) -> Group:
 
 def cmd_top(args: list[str]) -> None:
     limit = int(args[0]) if args and args[0].isdigit() else 15
-    # Prima passata per "innescare" la misura cpu_percent di psutil.
+    # First pass to "prime" psutil's cpu_percent measurement.
     psutil.cpu_percent(None)
     for p in psutil.process_iter():
         try:
@@ -250,13 +256,13 @@ def cmd_top(args: list[str]) -> None:
             _dashboard(limit),
             refresh_per_second=1,
             console=console,
-            screen=console.is_terminal,  # schermo intero solo in un vero terminale
+            screen=console.is_terminal,  # full screen only in a real terminal
         ) as live:
             while True:
                 time.sleep(1.0)
                 live.update(_dashboard(limit))
     except KeyboardInterrupt:
-        console.print("[dim]Monitor chiuso.[/dim]")
+        console.print("[dim]Monitor closed.[/dim]")
 
 
 def cmd_sysinfo(_args: list[str]) -> None:
@@ -267,35 +273,35 @@ def cmd_sysinfo(_args: list[str]) -> None:
     uptime = datetime.now() - boot
 
     lines = [
-        f"CPU:    [{color_for_percent(cpu)}]{cpu:.1f}%[/] su {psutil.cpu_count()} core",
+        f"CPU:    [{color_for_percent(cpu)}]{cpu:.1f}%[/] on {psutil.cpu_count()} cores",
         f"RAM:    [{color_for_percent(vm.percent)}]{vm.percent:.1f}%[/] "
         f"({human_bytes(vm.used)} / {human_bytes(vm.total)})",
-        f"Disco:  [{color_for_percent(disk.percent)}]{disk.percent:.1f}%[/] "
+        f"Disk:   [{color_for_percent(disk.percent)}]{disk.percent:.1f}%[/] "
         f"({human_bytes(disk.used)} / {human_bytes(disk.total)})",
         f"Uptime: {str(uptime).split('.')[0]}",
     ]
-    console.print(Panel("\n".join(lines), title="[bold]Stato sistema[/bold]", border_style="cyan"))
+    console.print(Panel("\n".join(lines), title="[bold]System status[/bold]", border_style="cyan"))
 
 
 # --------------------------------------------------------------------------- #
-# Comandi: utilita' shell
+# Commands: shell utilities
 # --------------------------------------------------------------------------- #
 def cmd_clear(_args: list[str]) -> None:
     console.clear()
 
 
 def cmd_help(_args: list[str]) -> None:
-    console.print(Panel(__doc__ or "", title="[bold]MyShell - aiuto[/bold]", border_style="green"))
+    console.print(Panel(__doc__ or "", title="[bold]MyShell - help[/bold]", border_style="green"))
 
 
 def cmd_mkdir(args: list[str]) -> None:
     if not args:
-        console.print("[red]mkdir: specifica almeno una cartella[/red]")
+        console.print("[red]mkdir: specify at least one folder[/red]")
         return
     for a in args:
         try:
             Path(a).mkdir(parents=True, exist_ok=True)
-            console.print(f"[green]creata[/green] {a}")
+            console.print(f"[green]created[/green] {a}")
         except OSError as exc:
             console.print(f"[red]mkdir: {exc}[/red]")
 
@@ -304,29 +310,29 @@ def cmd_rm(args: list[str]) -> None:
     recursive = any(a in ("-r", "-rf", "-R") for a in args)
     targets = [a for a in args if not a.startswith("-")]
     if not targets:
-        console.print("[red]rm: specifica un file o cartella (usa -r per le cartelle)[/red]")
+        console.print("[red]rm: specify a file or folder (use -r for folders)[/red]")
         return
     for t in targets:
         p = Path(t)
         if not p.exists():
-            console.print(f"[red]rm: non esiste:[/red] {t}")
+            console.print(f"[red]rm: does not exist:[/red] {t}")
             continue
         try:
             if p.is_dir():
                 if not recursive:
-                    console.print(f"[yellow]rm: '{t}' e' una cartella, usa 'rm -r {t}'[/yellow]")
+                    console.print(f"[yellow]rm: '{t}' is a folder, use 'rm -r {t}'[/yellow]")
                     continue
                 shutil.rmtree(p)
             else:
                 p.unlink()
-            console.print(f"[green]rimosso[/green] {t}")
+            console.print(f"[green]removed[/green] {t}")
         except OSError as exc:
             console.print(f"[red]rm: {exc}[/red]")
 
 
 def cmd_copy(args: list[str]) -> None:
     if len(args) < 2:
-        console.print("[red]copy: uso: copy <sorgente> <destinazione>[/red]")
+        console.print("[red]copy: usage: copy <source> <destination>[/red]")
         return
     src, dst = Path(args[0]), Path(args[1])
     try:
@@ -334,47 +340,47 @@ def cmd_copy(args: list[str]) -> None:
             shutil.copytree(src, dst)
         else:
             shutil.copy2(src, dst)
-        console.print(f"[green]copiato[/green] {args[0]} -> {args[1]}")
+        console.print(f"[green]copied[/green] {args[0]} -> {args[1]}")
     except OSError as exc:
         console.print(f"[red]copy: {exc}[/red]")
 
 
 def cmd_move(args: list[str]) -> None:
     if len(args) < 2:
-        console.print("[red]move: uso: move <sorgente> <destinazione>[/red]")
+        console.print("[red]move: usage: move <source> <destination>[/red]")
         return
     try:
         shutil.move(args[0], args[1])
-        console.print(f"[green]spostato[/green] {args[0]} -> {args[1]}")
+        console.print(f"[green]moved[/green] {args[0]} -> {args[1]}")
     except OSError as exc:
         console.print(f"[red]move: {exc}[/red]")
 
 
 def cmd_cat(args: list[str]) -> None:
     if not args:
-        console.print("[red]cat: specifica un file[/red]")
+        console.print("[red]cat: specify a file[/red]")
         return
     p = Path(args[0])
     if not p.is_file():
-        console.print(f"[red]cat: file non trovato:[/red] {args[0]}")
+        console.print(f"[red]cat: file not found:[/red] {args[0]}")
         return
     try:
         text = p.read_text(encoding="utf-8", errors="replace")
     except OSError as exc:
         console.print(f"[red]cat: {exc}[/red]")
         return
-    # Colorazione della sintassi in base all'estensione del file.
+    # Syntax highlighting based on the file extension.
     syntax = Syntax(text, Syntax.guess_lexer(str(p), text), line_numbers=True, theme="ansi_dark")
     console.print(syntax)
 
 
 def cmd_find(args: list[str]) -> None:
     if not args:
-        console.print("[red]find: specifica un nome o pattern (es. *.py)[/red]")
+        console.print("[red]find: specify a name or pattern (e.g. *.py)[/red]")
         return
     pattern = args[0]
     if "*" not in pattern and "?" not in pattern:
-        pattern = f"*{pattern}*"  # ricerca "contiene" se non e' un glob
+        pattern = f"*{pattern}*"  # "contains" search when it is not a glob
     base = Path.cwd()
     count = 0
     for match in base.rglob(pattern):
@@ -382,14 +388,14 @@ def cmd_find(args: list[str]) -> None:
         style = "bold blue" if match.is_dir() else "white"
         console.print(f"[{style}]{rel}[/]")
         count += 1
-    console.print(f"[dim]{count} risultati[/dim]")
+    console.print(f"[dim]{count} results[/dim]")
 
 
 def cmd_open(args: list[str]) -> None:
     target = args[0] if args else "."
     p = Path(target)
     if not p.exists():
-        console.print(f"[red]open: percorso inesistente:[/red] {target}")
+        console.print(f"[red]open: path does not exist:[/red] {target}")
         return
     try:
         if hasattr(os, "startfile"):
@@ -400,8 +406,182 @@ def cmd_open(args: list[str]) -> None:
         console.print(f"[red]open: {exc}[/red]")
 
 
+# --------------------------------------------------------------------------- #
+# Commands: password manager (encrypted vault)
+# --------------------------------------------------------------------------- #
+# Key and data stay in memory for the session only (never on disk).
+_vault_key: bytes | None = None
+_vault_data: dict[str, dict[str, str]] | None = None
+
+
+def _ensure_unlocked() -> bool:
+    """Unlock the vault (prompting for the master password) if not already open."""
+    global _vault_key, _vault_data
+    if _vault_key is not None:
+        return True
+    if not vault.vault_exists():
+        console.print("[yellow]No vault yet. Create one with:[/yellow] pass init")
+        return False
+    try:
+        pw = getpass.getpass("Master password: ")
+    except (EOFError, KeyboardInterrupt):
+        console.print()
+        return False
+    try:
+        _vault_key, _vault_data = vault.unlock(pw)
+    except vault.InvalidToken:
+        console.print("[red]Wrong master password.[/red]")
+        return False
+    return True
+
+
+def _pass_init(_args: list[str]) -> None:
+    global _vault_key, _vault_data
+    if vault.vault_exists():
+        console.print("[yellow]A vault already exists.[/yellow] Delete it manually to recreate it: "
+                      f"{vault.VAULT_PATH}")
+        return
+    pw1 = getpass.getpass("New master password: ")
+    if not pw1:
+        console.print("[red]Empty password, cancelled.[/red]")
+        return
+    pw2 = getpass.getpass("Confirm master password: ")
+    if pw1 != pw2:
+        console.print("[red]Passwords do not match, cancelled.[/red]")
+        return
+    _vault_key = vault.create_vault(pw1)
+    _vault_data = {}
+    console.print(f"[green]Vault created:[/green] {vault.VAULT_PATH}")
+
+
+def _pass_add(args: list[str]) -> None:
+    if not args:
+        console.print("[red]usage: pass add <name>[/red]")
+        return
+    if not _ensure_unlocked():
+        return
+    assert _vault_data is not None and _vault_key is not None
+    name = args[0]
+    if name in _vault_data:
+        console.print(f"[yellow]'{name}' already exists. Use 'pass rm {name}' before redoing it.[/yellow]")
+        return
+    username = input("Username: ").strip()
+    pwd = getpass.getpass("Password (empty = generate): ")
+    if not pwd:
+        pwd = _generate_password(20)
+        console.print("[dim]Password generated automatically.[/dim]")
+    note = input("Note (optional): ").strip()
+    _vault_data[name] = {"username": username, "password": pwd, "note": note}
+    vault.save(_vault_key, _vault_data)
+    console.print(f"[green]Saved credential[/green] '{name}'")
+
+
+def _pass_get(args: list[str]) -> None:
+    if not args:
+        console.print("[red]usage: pass get <name>[/red]")
+        return
+    if not _ensure_unlocked():
+        return
+    assert _vault_data is not None
+    name = args[0]
+    entry = _vault_data.get(name)
+    if not entry:
+        console.print(f"[red]No credential with name:[/red] {name}")
+        return
+    table = Table(show_header=False, box=None)
+    table.add_column(style="bold cyan")
+    table.add_column()
+    table.add_row("Name", name)
+    table.add_row("Username", entry.get("username", ""))
+    table.add_row("Password", f"[bold yellow]{entry.get('password', '')}[/bold yellow]")
+    if entry.get("note"):
+        table.add_row("Note", entry["note"])
+    console.print(table)
+
+
+def _pass_list(_args: list[str]) -> None:
+    if not _ensure_unlocked():
+        return
+    assert _vault_data is not None
+    if not _vault_data:
+        console.print("[dim]Vault is empty.[/dim]")
+        return
+    table = Table(header_style="bold magenta")
+    table.add_column("Name")
+    table.add_column("Username")
+    for name, entry in sorted(_vault_data.items()):
+        table.add_row(name, entry.get("username", ""))
+    console.print(table)
+
+
+def _pass_rm(args: list[str]) -> None:
+    if not args:
+        console.print("[red]usage: pass rm <name>[/red]")
+        return
+    if not _ensure_unlocked():
+        return
+    assert _vault_data is not None and _vault_key is not None
+    name = args[0]
+    if name not in _vault_data:
+        console.print(f"[red]No credential with name:[/red] {name}")
+        return
+    del _vault_data[name]
+    vault.save(_vault_key, _vault_data)
+    console.print(f"[green]Removed[/green] '{name}'")
+
+
+def _generate_password(length: int = 20) -> str:
+    alphabet = string.ascii_letters + string.digits + "!@#$%^&*()-_=+"
+    return "".join(secrets.choice(alphabet) for _ in range(length))
+
+
+def _pass_gen(args: list[str]) -> None:
+    length = int(args[0]) if args and args[0].isdigit() else 20
+    console.print(f"[bold yellow]{_generate_password(length)}[/bold yellow]")
+
+
+def _pass_lock(_args: list[str]) -> None:
+    global _vault_key, _vault_data
+    _vault_key = None
+    _vault_data = None
+    console.print("[green]Vault locked.[/green]")
+
+
+_PASS_SUB: dict[str, Callable[[list[str]], None]] = {
+    "init": _pass_init,
+    "add": _pass_add,
+    "get": _pass_get,
+    "list": _pass_list,
+    "ls": _pass_list,
+    "rm": _pass_rm,
+    "del": _pass_rm,
+    "gen": _pass_gen,
+    "lock": _pass_lock,
+}
+
+
+def cmd_pass(args: list[str]) -> None:
+    if not args:
+        console.print(
+            "Password manager. Subcommands:\n"
+            "  [cyan]pass init[/cyan]          create the vault (master password)\n"
+            "  [cyan]pass add <name>[/cyan]    add a credential\n"
+            "  [cyan]pass get <name>[/cyan]    show a credential\n"
+            "  [cyan]pass list[/cyan]          list credentials\n"
+            "  [cyan]pass rm <name>[/cyan]     remove a credential\n"
+            "  [cyan]pass gen [n][/cyan]       generate a random password\n"
+            "  [cyan]pass lock[/cyan]          lock the vault (master password required again)"
+        )
+        return
+    sub = _PASS_SUB.get(args[0].lower())
+    if sub is None:
+        console.print(f"[red]pass: unknown subcommand:[/red] {args[0]}")
+        return
+    sub(args[1:])
+
+
 def has_shell_operators(line: str) -> bool:
-    """True se la riga contiene pipe/redirect (| < > &) fuori dalle virgolette."""
+    """True if the line contains pipes/redirects (| < > &) outside of quotes."""
     in_quote: str | None = None
     for ch in line:
         if ch in ("'", '"'):
@@ -415,7 +595,7 @@ def has_shell_operators(line: str) -> bool:
 
 
 def run_external(command: str) -> None:
-    """Esegue un comando di sistema (con supporto a pipe e redirect via shell)."""
+    """Run a system command (with pipe and redirect support via the shell)."""
     try:
         subprocess.run(command, shell=True)
     except KeyboardInterrupt:
@@ -423,7 +603,7 @@ def run_external(command: str) -> None:
 
 
 # --------------------------------------------------------------------------- #
-# Loop principale
+# Main loop
 # --------------------------------------------------------------------------- #
 DISPATCH: dict[str, Callable[[list[str]], None]] = {
     "cd": cmd_cd,
@@ -449,19 +629,20 @@ DISPATCH: dict[str, Callable[[list[str]], None]] = {
     "find": cmd_find,
     "open": cmd_open,
     "start": cmd_open,
+    "pass": cmd_pass,
 }
 
 
 def make_prompt() -> str:
-    """Prompt colorato (testo semplice; lo stile lo aggiunge prompt_toolkit/rich)."""
+    """Plain-text prompt; styling is added by prompt_toolkit/rich."""
     return f"{Path.cwd()} > "
 
 
 def make_session() -> Any | None:
-    """Crea una PromptSession (cronologia + autocompletamento).
+    """Create a PromptSession (history + autocompletion).
 
-    Ritorna None se prompt_toolkit non e' installato o se la console non e'
-    compatibile (es. esecuzione tramite pipe): in tal caso si usa input().
+    Returns None if prompt_toolkit is not installed or the console is not
+    compatible (e.g. running through a pipe): in that case input() is used.
     """
     try:
         from prompt_toolkit import PromptSession
@@ -488,7 +669,7 @@ def make_session() -> Any | None:
 def get_input(session: Any | None) -> str:
     if session is not None:
         return cast(str, session.prompt(make_prompt()))
-    # fallback senza prompt_toolkit
+    # fallback without prompt_toolkit
     console.print(f"[bold green]{Path.cwd()}[/bold green] [bold cyan]>[/bold cyan] ", end="")
     return input()
 
@@ -496,8 +677,8 @@ def get_input(session: Any | None) -> str:
 def main() -> None:
     console.print(
         Panel(
-            "[bold cyan]MyShell[/bold cyan] - scrivi [bold]help[/bold] per i comandi, "
-            "[bold]exit[/bold] per uscire.",
+            "[bold cyan]MyShell[/bold cyan] - type [bold]help[/bold] for commands, "
+            "[bold]exit[/bold] to quit.",
             border_style="cyan",
         )
     )
@@ -508,13 +689,13 @@ def main() -> None:
         try:
             line = get_input(session).strip()
         except (EOFError, KeyboardInterrupt):
-            console.print("\n[dim]Uscita.[/dim]")
+            console.print("\n[dim]Exiting.[/dim]")
             break
 
         if not line:
             continue
 
-        # Con pipe/redirect (| > < &) passa l'intera riga alla shell di sistema.
+        # With pipes/redirects (| > < &) pass the whole line to the system shell.
         if has_shell_operators(line):
             run_external(line)
             continue
@@ -527,15 +708,15 @@ def main() -> None:
         cmd, args = parts[0].lower(), parts[1:]
 
         if cmd in ("exit", "quit"):
-            console.print("[dim]Ciao![/dim]")
+            console.print("[dim]Bye![/dim]")
             break
 
         handler = DISPATCH.get(cmd)
         if handler:
             try:
                 handler(args)
-            except Exception as exc:  # non far morire la shell per un errore di comando
-                console.print(f"[red]errore:[/red] {exc}")
+            except Exception as exc:  # do not let the shell die on a command error
+                console.print(f"[red]error:[/red] {exc}")
         else:
             run_external(line)
 
